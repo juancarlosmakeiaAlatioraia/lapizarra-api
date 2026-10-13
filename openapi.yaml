@@ -1,0 +1,197 @@
+openapi: 3.0.3
+info:
+  title: API de gestión de restaurantes y menús del día — La Pizarra
+  version: 1.0.0
+  description: |
+    Operaciones que necesita un gestor externo para dar de alta restaurantes en La Pizarra, publicar su menú del
+    día y retirarlos. Todo en JSON, UTF-8, fechas YYYY-MM-DD, huso horario de España. Cada recurso lleva el
+    identificador estable del gestor (`id_altiora`): repetir una petición no debe duplicar nada (idempotencia).
+servers:
+  - url: https://sandbox.example.com/api/v1
+    description: Entorno de pruebas (otra clave, sin publicar en producción)
+security:
+  - bearer: []
+paths:
+  /restaurantes:
+    post:
+      summary: Crear el perfil de un restaurante
+      description: 201 si se crea; 200 con el mismo id si ya existe un perfil con ese `id_altiora`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RestauranteNuevo"}
+      responses:
+        "201": {description: Creado, content: {application/json: {schema: {$ref: "#/components/schemas/RestauranteCreado"}}}}
+        "200": {description: Ya existía, content: {application/json: {schema: {$ref: "#/components/schemas/RestauranteCreado"}}}}
+        "422": {$ref: "#/components/responses/Error"}
+    get:
+      summary: Consultar un restaurante o listar los del gestor
+      parameters:
+        - {name: id_altiora, in: query, schema: {type: integer}, description: Devuelve el restaurante con ese id}
+        - {name: gestionado_por, in: query, schema: {type: string}}
+        - {name: pagina, in: query, schema: {type: integer, default: 1}}
+      responses:
+        "200":
+          description: Con `id_altiora` devuelve uno; sin él, un listado paginado.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - {$ref: "#/components/schemas/Consulta"}
+                  - {$ref: "#/components/schemas/Listado"}
+  /restaurantes/{id_externo}:
+    parameters:
+      - {name: id_externo, in: path, required: true, schema: {type: string}}
+    patch:
+      summary: Actualizar datos del perfil (solo lo que cambia)
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RestauranteCambios"}
+      responses:
+        "200": {description: Actualizado, content: {application/json: {schema: {type: object, properties: {id_externo: {type: string}, actualizado: {type: boolean}}}}}}
+        "404": {$ref: "#/components/responses/Error"}
+    delete:
+      summary: Borrar el perfil de un restaurante
+      description: Idempotente (borrar uno ya borrado devuelve 200). Si el dueño reclamó el perfil, 409 `perfil_reclamado`.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id_altiora: {type: integer}
+                motivo: {type: string, enum: [sustituido, retirado]}
+      responses:
+        "200": {description: Borrado, content: {application/json: {schema: {$ref: "#/components/schemas/Borrado"}}}}
+        "409": {$ref: "#/components/responses/Error"}
+  /restaurantes/{id_externo}/menus/{fecha}:
+    put:
+      summary: Publicar el menú del día de una fecha
+      description: Mismo restaurante y fecha = se sobrescribe, nunca se duplica.
+      parameters:
+        - {name: id_externo, in: path, required: true, schema: {type: string}}
+        - {name: fecha, in: path, required: true, schema: {type: string, format: date}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Menu"}
+      responses:
+        "200": {description: Publicado, content: {application/json: {schema: {$ref: "#/components/schemas/MenuPublicado"}}}}
+        "404": {$ref: "#/components/responses/Error"}
+        "422": {$ref: "#/components/responses/Error"}
+  /restaurantes/{id_externo}/sustituir:
+    post:
+      summary: (Opcional) Sustituir un perfil por otro en una sola operación atómica
+      parameters:
+        - {name: id_externo, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nuevo]
+              properties:
+                nuevo: {$ref: "#/components/schemas/RestauranteNuevo"}
+                menu_hoy:
+                  nullable: true
+                  allOf:
+                    - {$ref: "#/components/schemas/Menu"}
+      responses:
+        "200":
+          description: Antiguo borrado y nuevo creado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  antiguo: {$ref: "#/components/schemas/Borrado"}
+                  nuevo: {$ref: "#/components/schemas/RestauranteCreado"}
+components:
+  securitySchemes:
+    bearer: {type: http, scheme: bearer, description: Clave de API con permiso solo sobre los perfiles creados por el gestor}
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: object
+                properties:
+                  codigo: {type: string, example: perfil_no_encontrado}
+                  mensaje: {type: string}
+  schemas:
+    RestauranteNuevo:
+      type: object
+      required: [id_altiora, nombre, ciudad]
+      properties:
+        id_altiora: {type: integer, example: 412}
+        nombre: {type: string, example: Casa Tino}
+        direccion: {type: string, example: C/ Uría 3}
+        ciudad: {type: string, example: Gijón}
+        telefono: {type: string, nullable: true}
+        web: {type: string, nullable: true}
+        instagram: {type: string, nullable: true}
+        facebook: {type: string, nullable: true}
+        gestionado_por: {type: string, example: Altiora IA, description: Quién gestiona el perfil mientras no lo reclame el dueño}
+        reclamable: {type: boolean, description: El dueño real podrá reclamarlo}
+    RestauranteCambios:
+      type: object
+      description: Cualquiera de los campos de RestauranteNuevo salvo `id_altiora`.
+      additionalProperties: true
+    RestauranteCreado:
+      type: object
+      properties:
+        id_externo: {type: string, example: rst_8841}
+        id_altiora: {type: integer}
+        estado: {type: string, example: activo}
+        creado: {type: boolean}
+    Consulta:
+      type: object
+      properties:
+        encontrado: {type: boolean}
+        id_externo: {type: string}
+        estado: {type: string}
+        ultimo_menu: {type: string, format: date, nullable: true}
+    Listado:
+      type: object
+      properties:
+        total: {type: integer}
+        pagina: {type: integer}
+        por_pagina: {type: integer}
+        restaurantes:
+          type: array
+          items: {$ref: "#/components/schemas/RestauranteCreado"}
+    Menu:
+      type: object
+      required: [fecha, primeros, segundos]
+      additionalProperties: true
+      description: Se pueden recibir campos adicionales; los desconocidos se ignoran.
+      properties:
+        id_altiora: {type: integer}
+        fecha: {type: string, format: date}
+        precio: {type: string, example: "14"}
+        primeros: {type: array, items: {type: string}}
+        segundos: {type: array, items: {type: string}}
+        postres: {type: array, items: {type: string}}
+        bebida: {type: string}
+        imagen_url: {type: string, nullable: true}
+        clave_idempotencia: {type: string, example: 412-2026-10-13}
+    MenuPublicado:
+      type: object
+      properties:
+        id_externo: {type: string}
+        fecha: {type: string, format: date}
+        estado: {type: string, example: publicado}
+        sobrescrito: {type: boolean}
+    Borrado:
+      type: object
+      properties:
+        id_externo: {type: string}
+        estado: {type: string, example: borrado}
